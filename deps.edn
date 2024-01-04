@@ -1,0 +1,20 @@
+{:paths ["src"]
+ :deps
+ {com.fooheads/tolk                      {:mvn/version "0.9.0"}
+  com.fooheads/raql                      {:local/root "../raql"}}
+
+ :aliases
+ {:test
+  {:extra-paths ["test"]
+   :extra-deps 
+   {com.fooheads/chinook-edn             {:mvn/version "0.1.12"}
+    com.fooheads/stdlib                  {:mvn/version "0.4.0"}
+    com.fooheads/test                    {:mvn/version "0.1.4"}
+    com.github.seancorfield/honeysql     {:mvn/version "2.4.1066"}
+    io.github.cognitect-labs/test-runner {:git/tag "v0.5.1" :git/sha "dfb30dd"}}
+   :main-opts ["-m" "cognitect.test-runner"]
+   :exec-fn cognitect.test-runner.api/test}
+
+  :build
+  {:deps {com.fooheads/build-clj {:mvn/version "1.0.0"}}
+   :ns-default fooheads.build}}}
