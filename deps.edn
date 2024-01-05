@@ -1,12 +1,12 @@
 {:paths ["src"]
  :deps
  {com.fooheads/tolk                      {:mvn/version "0.9.0"}
-  com.fooheads/raql                      {:local/root "../raql"}}
+  com.fooheads/raql                      {:mvn/version "0.9.0"}}
 
  :aliases
  {:test
   {:extra-paths ["test"]
-   :extra-deps 
+   :extra-deps
    {com.fooheads/chinook-edn             {:mvn/version "0.1.12"}
     com.fooheads/stdlib                  {:mvn/version "0.4.0"}
     com.fooheads/test                    {:mvn/version "0.1.4"}
