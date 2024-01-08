@@ -1,7 +1,7 @@
 (ns fooheads.raql-honeysql.core-test
   (:require
     [chinook]
-    [clojure.test :refer [are deftest]]
+    [clojure.test :refer [are deftest is]]
     [fooheads.raql-honeysql.chinook-schema :as chinook-schema]
     [fooheads.raql-honeysql.core :as rh]
     [fooheads.raql.core :as raql]
@@ -12,6 +12,7 @@
 
 (def builder rs/as-unqualified-maps)
 (def heading-relmap (chinook-schema/heading-relmap))
+(def heading-relmap-with-schema (chinook-schema/heading-relmap))
 
 
 (defn honey
@@ -43,6 +44,18 @@
   "Executes a HoneySQL expression"
   [expr]
   (-> expr (sql/format) (sql!)))
+
+
+(deftest honey-test
+  (let [raql '[->
+               [relation :Artist]
+               [project [:Artist/Name]]
+               [restrict [= :Artist/Name "Jimi Hendrix"]]]
+        ast (raql/compile heading-relmap {} raql)]
+    (->
+      ast
+      (rh/transform)
+      (sql/format))))
 
 
 (deftest transform-test
@@ -324,6 +337,21 @@
               from \"Album\") as \"Album\"
              on \"Artist/ArtistId\" = \"Album/ArtistId\"
              order by \"Artist/Name\" desc, \"Album/Title\""])))
+
+
+(deftest transform-with-namespace-test
+  (let [raql '[relation :Artist]
+        ast (raql/compile heading-relmap {} raql)]
+    (is (= [[[:raw "\"Artist\""] :__relation]]
+           (:from
+             (as->
+               ast $
+               (rh/transform $ {})))))
+
+    (is (= [[[:raw "\"chinook\".\"Artist\""] :__relation]]
+           (:from (as->
+                    ast $
+                    (rh/transform $ {:db-schema "chinook"})))))))
 
 
 (comment

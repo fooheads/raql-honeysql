@@ -6,6 +6,17 @@
     [fooheads.stdlib :refer [apply-if qualified-name throw-ex]]))
 
 
+(defn- sql-relation-name
+  ([kw]
+   [:raw (str "\"" (name kw) "\"")])
+  ([db-schema kw]
+   (if db-schema
+     [:raw (str (str "\"" (name db-schema) "\"")
+                "."
+                (str "\"" (name kw) "\""))]
+     (sql-relation-name kw))))
+
+
 (defn- sql-attr-name
   [kw]
   [:raw (str "\"" (qualified-name kw) "\"")])
@@ -48,15 +59,16 @@
   [node]
   (let [attr-names (heading-attr-names node)
         sql-names (map (comp vector sql-attr-name) attr-names)
-        attr-unqualified-names (map (comp keyword name) attr-names)
+        attr-unqualified-names (map (comp sql-attr-name keyword name) attr-names)
         selection (mapv vector attr-unqualified-names sql-names)]
     selection))
 
 
 (defn- relation'
-  ([node]
-   (assoc node :honey {:select (selection node)
-                       :from [[(first (:args node)) :__relation]]}))
+  ([node opts]
+   (let [relvar-name (sql-relation-name (:db-schema opts) (first (:args node)))]
+     (assoc node :honey {:select (selection node)
+                         :from [[relvar-name :__relation]]})))
 
   ;; Not yet implemented
   #_([namn projection]
@@ -65,7 +77,7 @@
 
 
 (defn- rename'
-  [node]
+  [node _opts]
   (let [[xrel renames] (:args node)
         underlying-attr-names (->> xrel :heading (map :attr/name))
         attrs-to-rename (set (map first renames))
@@ -78,14 +90,14 @@
 
 
 (defn- project'
-  [node]
+  [node _opts]
   (let [[xrel projection] (:args node)]
     (assoc node :honey {:select (raw-selection projection)
                         :from (:honey xrel)})))
 
 
 (defn- project-away'
-  [node]
+  [node _opts]
   (let [[xrel anti-projection] (:args node)
         anti-projection (set anti-projection)
         attr-names (->> xrel :heading (map :attr/name))
@@ -95,7 +107,7 @@
 
 
 (defn- restrict'
-  [node]
+  [node _opts]
   (let [[xrel restriction] (:args node)]
     (assoc node :honey {:select :*
                         :from (:honey xrel)
@@ -103,13 +115,13 @@
 
 
 (defn- limit'
-  [node]
+  [node _opts]
   (let [[rel limit offset] (:args node)]
     (assoc node :honey {:select :* :from (:honey rel) :limit limit :offset (or offset 0)})))
 
 
 (defn- join'
-  [join-op node]
+  [join-op node _opts]
   (let [[xrel yrel restriction] (:args node)]
     (assoc node :honey {:select :*
                         :from [[(:honey xrel) :__xrel]]
@@ -118,19 +130,19 @@
 
 
 (defn- union'
-  [node]
+  [node _opts]
   (let [[xrel yrel] (:args node)]
     (assoc node :honey {:union [(:honey xrel) (:honey yrel)]})))
 
 
 (defn- distinct'
-  [node]
+  [node _opts]
   (let [[xrel] (:args node)]
     (assoc node :honey {:select-distinct :* :from (:honey xrel)})))
 
 
 (defn- order-by'
-  [node]
+  [node _opts]
   (let [[rel ordering] (:args node)]
     (assoc
       node
@@ -161,15 +173,17 @@
 
 
 (defn transform
-  [ast]
-  (:honey
-    (walk/postwalk
-      (apply-if
-        ast/node?
-        (fn [node]
-          (let [operator (:operator node)
-                f (env operator)]
-            (f node))))
+  ([ast]
+   (transform ast {}))
+  ([ast opts]
+   (:honey
+     (walk/postwalk
+       (apply-if
+         ast/node?
+         (fn [node]
+           (let [operator (:operator node)
+                 f (env operator)]
+             (f node opts))))
 
-      ast)))
+       ast))))
 
