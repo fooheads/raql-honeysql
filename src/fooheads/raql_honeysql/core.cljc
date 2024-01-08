@@ -45,6 +45,13 @@
     attr-name-pairs))
 
 
+(defn- from
+  ([relvar-name]
+   (from relvar-name :__relation))
+  ([relvar-name as]
+   [[relvar-name as]]))
+
+
 (defn- raw-restriction
   [restriction]
   (walk/postwalk (apply-if qualified-keyword? sql-attr-name) restriction))
@@ -68,12 +75,12 @@
   ([node opts]
    (let [relvar-name (sql-relation-name (:db-schema opts) (first (:args node)))]
      (assoc node :honey {:select (selection node)
-                         :from [[relvar-name :__relation]]})))
+                         :from (from relvar-name)})))
 
   ;; Not yet implemented
   #_([namn projection]
      {:select (attrs-projection projection)
-      :from [[(keyword namn) :__relation]]}))
+      :from (from (keyword namn))}))
 
 
 (defn- rename'
@@ -86,14 +93,14 @@
         selection (concat attrs-pairs renames)]
 
     (assoc node :honey {:select (raw-selection selection)
-                        :from (:honey xrel)})))
+                        :from (from (:honey xrel))})))
 
 
 (defn- project'
   [node _opts]
   (let [[xrel projection] (:args node)]
     (assoc node :honey {:select (raw-selection projection)
-                        :from (:honey xrel)})))
+                        :from (from (:honey xrel))})))
 
 
 (defn- project-away'
@@ -103,21 +110,24 @@
         attr-names (->> xrel :heading (map :attr/name))
         projection (remove anti-projection attr-names)]
     (assoc node :honey {:select (raw-selection projection)
-                        :from (:honey xrel)})))
+                        :from (from (:honey xrel))})))
 
 
 (defn- restrict'
   [node _opts]
   (let [[xrel restriction] (:args node)]
     (assoc node :honey {:select :*
-                        :from (:honey xrel)
+                        :from (from (:honey xrel))
                         :where (raw-restriction restriction)})))
 
 
 (defn- limit'
   [node _opts]
   (let [[rel limit offset] (:args node)]
-    (assoc node :honey {:select :* :from (:honey rel) :limit limit :offset (or offset 0)})))
+    (assoc node :honey {:select :*
+                        :from (from (:honey rel))
+                        :limit limit
+                        :offset (or offset 0)})))
 
 
 (defn- join'
@@ -138,7 +148,7 @@
 (defn- distinct'
   [node _opts]
   (let [[xrel] (:args node)]
-    (assoc node :honey {:select-distinct :* :from (:honey xrel)})))
+    (assoc node :honey {:select-distinct :* :from (from (:honey xrel))})))
 
 
 (defn- order-by'
