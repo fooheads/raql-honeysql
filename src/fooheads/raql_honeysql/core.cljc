@@ -62,14 +62,11 @@
       in
       (let [[attr-name vector-or-subquery] operands]
         (cond
-          (vector? vector-or-subquery)
-          (walk/postwalk (apply-if qualified-keyword? sql-attr-name) restriction)
-
           (map? vector-or-subquery)
           ['in (sql-attr-name attr-name) (transform vector-or-subquery opts)]
 
           :else
-          (throw-ex "Unknown restriction" restriction)))
+          (walk/postwalk (apply-if qualified-keyword? sql-attr-name) restriction)))
 
       (walk/postwalk (apply-if qualified-keyword? sql-attr-name) restriction))))
 

@@ -22,28 +22,45 @@
 
 
 (defn sql
-  [expr]
-  (sql/format (honey expr)))
+  ([expr]
+   (sql/format (honey expr)))
+  ([expr params]
+   (sql/format (honey expr) {:params params})))
 
 
 (defn raql!
   "Executes a RAQL expression"
-  [expr]
-  (jdbc/execute! chinook/ds (sql expr)
-                 {:builder-fn builder}))
+  ([expr]
+   (jdbc/execute! chinook/ds (sql expr)
+                  {:builder-fn builder}))
+  ([expr params]
+   (jdbc/execute! chinook/ds (sql expr params)
+                  {:builder-fn builder})))
 
 
 (defn sql!
   "Executes a SQL expression"
-  [expr]
-  (jdbc/execute! chinook/ds expr
-                 {:builder-fn builder}))
+  ([expr]
+   (jdbc/execute! chinook/ds expr
+                  {:builder-fn builder})))
 
 
 (defn honey!
   "Executes a HoneySQL expression"
-  [expr]
-  (-> expr (sql/format) (sql!)))
+  ([expr]
+   (-> expr (sql/format) (sql!))))
+
+
+(comment
+  (sql '[restrict
+         [relation :Artist]
+         [= :Artist/ArtistId 7]])
+
+  (raql!
+    '[restrict
+      [relation :Artist]
+      [= :Artist/ArtistId ?id]]
+    {:id 7}))
 
 
 (deftest honey-test
@@ -176,6 +193,36 @@
                      \"Name\" as \"Artist/Name\"
                    from \"Artist\")
                   where \"Artist/ArtistId\" in (5, 6)))"])
+
+    ;; restrict with params
+    (raql! '[->
+             [relation :Artist]
+             [restrict [= :Artist/ArtistId ?id]]]
+           {:id 5})
+
+    (sql!   ["select *
+             from
+             (select
+                \"ArtistId\" as \"Artist/ArtistId\",
+                \"Name\" as \"Artist/Name\"
+              from \"Artist\")
+             where \"Artist/ArtistId\" = ?"
+             5])
+
+
+    (raql! '[->
+             [relation :Artist]
+             [restrict [in :Artist/ArtistId ?ids]]]
+           {:ids [5 6]})
+
+    (sql!   ["select *
+             from
+             (select
+                \"ArtistId\" as \"Artist/ArtistId\",
+                \"Name\" as \"Artist/Name\"
+              from \"Artist\")
+             where \"Artist/ArtistId\" in (?, ?)"
+             5 6])
 
     ;; distinct
     (raql! '[->
@@ -399,5 +446,38 @@
       [relation :Artist]
       [= :Artist/Name ?name]]
     (honey)
-    (sql/format {:params {:name "Jimi Hendrix"}})))
+    (sql/format {:params {:name "Jimi Hendrix"}}))
+
+  (sql!
+    (sql/format
+      '{:select :*
+        :from :Album
+        :where [in :AlbumId ?album-ids]}
+      {:params {:album-ids [7 8]}}))
+
+  (sql!
+    (sql/format
+      '{:select :*
+        :from :Album
+        :where [= :AlbumId ?album-id]}
+      {:params {:album-id 7}}))
+
+  (sql!
+    (sql/format
+      '{:select :*
+        :from [[{:select [[:AlbumId [[:raw "\"Album/AlbumId\""]]]
+                          [:Title [[:raw "\"Album/Title\""]]]
+                          [:ArtistId [[:raw "\"Album/ArtistId\""]]]]
+                 :from [[[:raw "\"Album\""] :__relation]]}
+                :__relation]]
+        :where [in
+                [:raw "\"Artist/ArtistId\""]
+                {:select [[[:raw "\"Artist/ArtistId\""]]]
+                 :from [[{:select :*
+                          :from [[{:select [[:ArtistId [[:raw "\"Artist/ArtistId\""]]]
+                                            [:Name [[:raw "\"Artist/Name\""]]]]
+                                   :from [[[:raw "\"Artist\""] :__relation]]}
+                                  :__relation]]
+                          :where [= [:raw "\"Artist/ArtistId\""] 5]}
+                         :__relation]]}]})))
 
