@@ -138,6 +138,45 @@
              where \"Artist/ArtistId\" = 5
              or    \"Artist/ArtistId\" = 6"])
 
+    ;; restrict in
+    (raql! '[->
+             [relation :Artist]
+             [restrict [in :Artist/ArtistId [5 6 7]]]])
+
+    (sql!   ["select *
+             from
+             (select
+                \"ArtistId\" as \"Artist/ArtistId\",
+                \"Name\" as \"Artist/Name\"
+              from \"Artist\")
+             where \"Artist/ArtistId\" in (5, 6, 7)"])
+
+    (raql! '[->
+             [relation :Album]
+             [restrict [in :Album/ArtistId
+                        [project
+                         [restrict
+                          [relation :Artist]
+                          [in :Artist/ArtistId [5 6]]]
+                         [:Artist/ArtistId]]]]])
+
+    (sql!   ["select
+               AlbumId \"Album/AlbumId\",
+               Title \"Album/Title\",
+               ArtistId \"Album/ArtistId\"
+
+              from Album
+              where ArtistId in
+              (select \"Artist/ArtistId\"
+               from
+                 (select *
+                  from
+                  (select
+                     \"ArtistId\" as \"Artist/ArtistId\",
+                     \"Name\" as \"Artist/Name\"
+                   from \"Artist\")
+                  where \"Artist/ArtistId\" in (5, 6)))"])
+
     ;; distinct
     (raql! '[->
              [relation :Track]

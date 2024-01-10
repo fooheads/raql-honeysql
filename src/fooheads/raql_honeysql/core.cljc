@@ -6,6 +6,9 @@
     [fooheads.stdlib :refer [apply-if qualified-name throw-ex]]))
 
 
+(declare transform)
+
+
 (defn- sql-relation-name
   ([kw]
    [:raw (str "\"" (name kw) "\"")])
@@ -53,8 +56,22 @@
 
 
 (defn- raw-restriction
-  [restriction]
-  (walk/postwalk (apply-if qualified-keyword? sql-attr-name) restriction))
+  [restriction opts]
+  (let [[operator & operands] restriction]
+    (case operator
+      in
+      (let [[attr-name vector-or-subquery] operands]
+        (cond
+          (vector? vector-or-subquery)
+          (walk/postwalk (apply-if qualified-keyword? sql-attr-name) restriction)
+
+          (map? vector-or-subquery)
+          ['in (sql-attr-name attr-name) (transform vector-or-subquery opts)]
+
+          :else
+          (throw-ex "Unknown restriction" restriction)))
+
+      (walk/postwalk (apply-if qualified-keyword? sql-attr-name) restriction))))
 
 
 (defn- heading-attr-names
@@ -114,11 +131,11 @@
 
 
 (defn- restrict'
-  [node _opts]
+  [node opts]
   (let [[xrel restriction] (:args node)]
     (assoc node :honey {:select :*
                         :from (from (:honey xrel))
-                        :where (raw-restriction restriction)})))
+                        :where (raw-restriction restriction opts)})))
 
 
 (defn- limit'
@@ -131,12 +148,12 @@
 
 
 (defn- join'
-  [join-op node _opts]
+  [join-op node opts]
   (let [[xrel yrel restriction] (:args node)]
     (assoc node :honey {:select :*
                         :from [[(:honey xrel) :__xrel]]
                         join-op [[(:honey yrel) :__yrel]
-                                 (raw-restriction restriction)]})))
+                                 (raw-restriction restriction opts)]})))
 
 
 (defn- union'
