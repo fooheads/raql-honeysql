@@ -66,7 +66,7 @@
   [node]
   (let [attr-names (heading-attr-names node)
         sql-names (map (comp vector sql-attr-name) attr-names)
-        attr-unqualified-names (map (comp sql-attr-name keyword name) attr-names)
+        attr-unqualified-names (map (comp keyword name) attr-names)
         selection (mapv vector attr-unqualified-names sql-names)]
     selection))
 
