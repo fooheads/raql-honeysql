@@ -77,19 +77,22 @@
 
 
 (defn- selection
-  [node]
-  (let [attr-names (heading-attr-names node)
+  [node column-name-fn]
+  (let [column-name (fn [attr] (column-name-fn (:attr/relvar-name attr) (:attr/name attr)))
+        attr-names (heading-attr-names node)
         sql-names (map (comp vector sql-attr-name) attr-names)
-        attr-unqualified-names (map (comp keyword name) attr-names)
+        attr-unqualified-names (map (comp sql-attr-name column-name) (:heading node))
         selection (mapv vector attr-unqualified-names sql-names)]
     selection))
 
 
 (defn- relation'
-  ([node opts]
-   (let [relvar-name (sql-relation-name (:db-schema opts) (first (:args node)))]
-     (assoc node :honey {:select (selection node)
-                         :from (from relvar-name)})))
+  ([node {:keys [table-name-fn column-name-fn db-schema]}]
+   (let [relvar-name (first (:args node))
+         table-name (table-name-fn relvar-name)
+         namespaced-table-name (sql-relation-name db-schema table-name)]
+     (assoc node :honey {:select (selection node column-name-fn)
+                         :from (from namespaced-table-name)})))
 
   ;; Not yet implemented
   #_([namn projection]
@@ -180,7 +183,7 @@
                                            ordering)}))))
 
 
-(def env
+(def ^:private env
   {'relation relation'
    'rename rename'
    'project project'
@@ -196,18 +199,24 @@
    'order-by order-by'})
 
 
+(def default-opts
+  {:table-name-fn name
+   :column-name-fn (fn [_relvar-name attr-name] (name attr-name))})
+
+
 (defn transform
   ([ast]
    (transform ast {}))
   ([ast opts]
-   (:honey
-     (walk/postwalk
-       (apply-if
-         ast/node?
-         (fn [node]
-           (let [operator (:operator node)
-                 f (env operator)]
-             (f node opts))))
+   (let [opts (merge default-opts opts)]
+     (:honey
+       (walk/postwalk
+         (apply-if
+           ast/node?
+           (fn [node]
+             (let [operator (:operator node)
+                   f (env operator)]
+               (f node opts))))
 
-       ast))))
+         ast)))))
 

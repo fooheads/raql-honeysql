@@ -1,18 +1,34 @@
 (ns fooheads.raql-honeysql.core-test
   (:require
+    [camel-snake-kebab.core :refer [->kebab-case]]
     [chinook]
+    [clojure.string :as str]
     [clojure.test :refer [are deftest is]]
+    [clojure.walk :refer [postwalk]]
     [fooheads.raql-honeysql.chinook-schema :as chinook-schema]
     [fooheads.raql-honeysql.core :as rh]
     [fooheads.raql.core :as raql]
+    [fooheads.stdlib :refer [apply-if]]
     [honey.sql :as sql]
     [next.jdbc :as jdbc]
     [next.jdbc.result-set :as rs]))
 
 
+(defn kebab-case-keyword
+  [kw]
+  (let [nspace (namespace kw)
+        namn (name kw)]
+    (if nspace
+      (keyword (->kebab-case nspace) (->kebab-case namn))
+      (keyword (->kebab-case namn)))))
+
+
 (def builder rs/as-unqualified-maps)
 (def heading-relmap (chinook-schema/heading-relmap))
-(def heading-relmap-with-schema (chinook-schema/heading-relmap))
+
+
+(def kebab-heading-relmap
+  (postwalk (apply-if keyword? kebab-case-keyword) heading-relmap))
 
 
 (defn honey
@@ -23,7 +39,7 @@
 
 (defn sql
   ([expr]
-   (sql/format (honey expr)))
+   (sql/format (honey expr) {:quoted false}))
   ([expr params]
    (sql/format (honey expr) {:params params})))
 
@@ -49,6 +65,12 @@
   "Executes a HoneySQL expression"
   ([expr]
    (-> expr (sql/format) (sql!))))
+
+
+(sql/format
+  {:select [:artist-id [[:raw :to]]]
+   :from :artist}
+  {:quoted false})
 
 
 (comment
@@ -440,44 +462,39 @@
                     (rh/transform $ {:db-schema "chinook"})))))))
 
 
-(comment
-  (->
-    '[restrict
-      [relation :Artist]
-      [= :Artist/Name ?name]]
-    (honey)
-    (sql/format {:params {:name "Jimi Hendrix"}}))
+(defn table-name
+  [relvar-name]
+  (-> relvar-name (name) (str/replace #"-" "_")))
 
-  (sql!
-    (sql/format
-      '{:select :*
-        :from :Album
-        :where [in :AlbumId ?album-ids]}
-      {:params {:album-ids [7 8]}}))
 
-  (sql!
-    (sql/format
-      '{:select :*
-        :from :Album
-        :where [= :AlbumId ?album-id]}
-      {:params {:album-id 7}}))
+(defn column-name
+  [_relvar-name attr-name]
+  (-> attr-name (name) (str/replace #"-" "_")))
 
-  (sql!
-    (sql/format
-      '{:select :*
-        :from [[{:select [[:AlbumId [[:raw "\"Album/AlbumId\""]]]
-                          [:Title [[:raw "\"Album/Title\""]]]
-                          [:ArtistId [[:raw "\"Album/ArtistId\""]]]]
-                 :from [[[:raw "\"Album\""] :__relation]]}
-                :__relation]]
-        :where [in
-                [:raw "\"Artist/ArtistId\""]
-                {:select [[[:raw "\"Artist/ArtistId\""]]]
-                 :from [[{:select :*
-                          :from [[{:select [[:ArtistId [[:raw "\"Artist/ArtistId\""]]]
-                                            [:Name [[:raw "\"Artist/Name\""]]]]
-                                   :from [[[:raw "\"Artist\""] :__relation]]}
-                                  :__relation]]
-                          :where [= [:raw "\"Artist/ArtistId\""] 5]}
-                         :__relation]]}]})))
+
+(deftest transform-with-table-column-names
+  (is (= {:from [[[:raw "\"artist\""] :__relation]]
+          :select [[[:raw "\"artist_id\""] [[:raw "\"artist/artist-id\""]]]
+                   [[:raw "\"name\""] [[:raw "\"artist/name\""]]]]}
+         (let [raql '[relation :artist]
+               ast (raql/compile kebab-heading-relmap {} raql)]
+
+           (as->
+             ast $
+             (rh/transform $ {:column-name-fn column-name})))))
+
+  (is (= {:from [[[:raw "\"invoice_line\""] :__relation]]
+          :select [[[:raw "\"invoice_line_id\""] [[:raw "\"invoice-line/invoice-line-id\""]]]
+                   [[:raw "\"invoice_id\""] [[:raw "\"invoice-line/invoice-id\""]]]
+                   [[:raw "\"track_id\""] [[:raw "\"invoice-line/track-id\""]]]
+                   [[:raw "\"unit_price\""] [[:raw "\"invoice-line/unit-price\""]]]
+                   [[:raw "\"quantity\""] [[:raw "\"invoice-line/quantity\""]]]]}
+
+         (let [raql '[relation :invoice-line]
+               ast (raql/compile kebab-heading-relmap {} raql)]
+
+           (as->
+             ast $
+             (rh/transform $ {:table-name-fn table-name
+                              :column-name-fn column-name}))))))
 

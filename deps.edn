@@ -7,7 +7,8 @@
  {:test
   {:extra-paths ["test"]
    :extra-deps
-   {com.fooheads/chinook-edn             {:mvn/version "0.1.12"}
+   {camel-snake-kebab/camel-snake-kebab  {:mvn/version "0.4.3"}
+    com.fooheads/chinook-edn             {:mvn/version "0.1.12"}
     com.fooheads/stdlib                  {:mvn/version "0.4.0"}
     com.fooheads/test                    {:mvn/version "0.1.4"}
     com.github.seancorfield/honeysql     {:mvn/version "2.4.1066"}
