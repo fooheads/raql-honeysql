@@ -183,6 +183,20 @@
                                            ordering)}))))
 
 
+(defn- constant-extension
+  [[attr-name [_type constant]]]
+  (let [sql-name [(sql-attr-name attr-name)]]
+    [constant sql-name]))
+
+
+(defn- extend'
+  [node _opts]
+  (let [[rel extensions] (:args node)
+        honey (:honey rel)]
+    (assoc node :honey
+           (update honey :select into (mapv constant-extension extensions)))))
+
+
 (def ^:private env
   {'relation relation'
    'rename rename'
@@ -196,7 +210,8 @@
    'right-join (partial join' :right-join)
    'limit limit'
    'union union'
-   'order-by order-by'})
+   'order-by order-by'
+   'extend extend'})
 
 
 (def default-opts

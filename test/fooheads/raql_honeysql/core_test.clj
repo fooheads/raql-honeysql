@@ -444,7 +444,18 @@
                 \"ArtistId\" as \"Album/ArtistId\"
               from \"Album\") as \"Album\"
              on \"Artist/ArtistId\" = \"Album/ArtistId\"
-             order by \"Artist/Name\" desc, \"Album/Title\""])))
+             order by \"Artist/Name\" desc, \"Album/Title\""])
+
+    ;; constant extensions
+    (raql! '[->
+             [relation :Artist]
+             [extend {:Artist/Rating [:string "Awesome"]}]])
+
+    (sql!   ["select
+                \"ArtistId\" as \"Artist/ArtistId\",
+                \"Name\" as \"Artist/Name\",
+                'Awesome' as \"Artist/Rating\"
+              from \"Artist\""])))
 
 
 (deftest transform-with-namespace-test
