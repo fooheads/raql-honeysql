@@ -85,19 +85,20 @@ large offsets can be expensive. Keyset pagination is not implemented.
 
 ## Development
 
-The pagination compiler and translator must be tested together. The `:test`
-alias uses the sibling `../raql` checkout rather than the published RAQL
-artifact. With `raql` checked out beside this repository:
+Normal tests use the published RAQL dependency and do not require a sibling
+checkout:
 
 ```bash
-# RAQL
-cd ../raql
-clojure -X:test
-
-# Adapter: sibling RAQL sources, existing SQLite tests, and embedded HSQLDB 2.7.4
-cd ../raql-honeysql
+# Existing SQLite tests and embedded HSQLDB 2.7.4
 clojure -M:test
 # Alternatively: clojure -X:test
+```
+
+For joint development with `raql` checked out beside this repository, opt into
+the sibling sources:
+
+```bash
+clojure -M:test:test/local
 ```
 
 External execution tests use isolated, uniquely named tables and remove them
@@ -114,8 +115,6 @@ test database; never commit credentials. SQL Server URLs use
 `jdbc:sqlserver://...`. The integration alias reports an explicit error if the
 engine or URL is missing instead of skipping execution.
 
-The production RAQL artifact dependency must be updated after a RAQL release
-containing the pagination changes. Until then, the `:test` alias supplies the
-local dependency override for tests; other development commands need an
-equivalent local dependency override. This repository does not publish the
-sibling library automatically.
+The production dependency is RAQL `0.9.10`. Release validation should use the
+normal test command without `:test/local`, so it exercises the same dependency
+that consumers receive.
