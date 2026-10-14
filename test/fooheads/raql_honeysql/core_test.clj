@@ -32,16 +32,18 @@
 
 
 (defn honey
-  [raql]
-  (let [ast (raql/compile heading-relmap {} raql)]
-    (rh/transform ast)))
+  ([raql]
+   (honey raql {}))
+  ([raql opts]
+   (let [ast (raql/compile heading-relmap {} raql)]
+     (rh/transform ast opts))))
 
 
 (defn sql
   ([expr]
    (sql/format (honey expr) {:quoted false}))
   ([expr params]
-   (sql/format (honey expr) {:params params})))
+   (sql/format (honey expr {:params params}) {:params params})))
 
 
 (defn raql!
@@ -280,6 +282,20 @@
               limit 5
               offset 5"])
 
+    ;; named pagination parameters
+    (raql! '[->
+             [relation :Artist]
+             [order-by [:Artist/ArtistId]]
+             [limit ?page-size ?start]]
+           {:page-size 5 :start 5})
+
+    (sql! ["select
+              \"ArtistId\" as \"Artist/ArtistId\",
+              \"Name\" as \"Artist/Name\"
+            from \"Artist\"
+            order by \"ArtistId\"
+            limit 5 offset 5"])
+
     ;; join
     (raql! '[->
              [relation :Artist]
@@ -508,4 +524,3 @@
              ast $
              (rh/transform $ {:table-name-fn table-name
                               :column-name-fn column-name}))))))
-

@@ -3,6 +3,7 @@
   (:require
     [clojure.walk :as walk]
     [fooheads.raql.ast :as ast]
+    [fooheads.raql.pagination :as pagination]
     [fooheads.stdlib :refer [apply-if qualified-name throw-ex]]))
 
 
@@ -138,13 +139,72 @@
                         :where (raw-restriction restriction opts)})))
 
 
-(defn- limit'
-  [node _opts]
-  (let [[rel limit offset] (:args node)]
-    (assoc node :honey {:select :*
-                        :from (from (:honey rel))
-                        :limit limit
-                        :offset (or offset 0)})))
+(defn- offset-window
+  [window n]
+  (cond-> (-> window
+              (update :offset + n)
+              (assoc :offset? true))
+    (some? (:limit window)) (update :limit #(max 0 (- % n)))))
+
+
+(defn- limit-window
+  [window n]
+  (update window :limit #(if (some? %) (min % n) n)))
+
+
+(defn- pagination-honey
+  [{:keys [source order-by offset offset? limit]} db-type]
+  (when (and (= :mssql db-type) offset? (not (seq order-by)))
+    (throw (ex-info "SQL Server offset requires an explicit order-by"
+                    {:db-type db-type :offset offset :limit limit})))
+  (let [honey (cond-> {:select :* :from (from source)}
+                (seq order-by) (assoc :order-by order-by))]
+    (if (= 0 limit)
+      (assoc (dissoc honey :order-by) :where [:= [:inline 1] [:inline 0]])
+      (case db-type
+        :postgresql
+        (cond-> honey
+          (some? limit) (assoc :limit limit)
+          offset? (assoc :offset offset))
+
+        :mssql
+        (if offset?
+          (cond-> (assoc honey :offset offset)
+            (some? limit) (assoc :fetch limit))
+          (-> honey
+              (dissoc :select)
+              (assoc :select-top [limit :*])))
+
+        :hsqldb
+        (cond-> honey
+          (some? limit) (assoc :fetch limit)
+          offset? (assoc :offset offset))))))
+
+
+(defn- pagination'
+  [node {:keys [params db-type]}]
+  (let [operator (:operator node)
+        args (:args node)
+        _ (pagination/validate-args! operator args)
+        [rel & values] args
+        counts (mapv #(pagination/resolve-count % params) values)
+        honey (:honey rel)
+        window (or (::window rel)
+                   {:source (dissoc honey :order-by)
+                    :order-by (:order-by honey)
+                    :offset 0
+                    :offset? false
+                    :limit nil})
+        window (case operator
+                 offset (offset-window window (first counts))
+                 limit (limit-window
+                         (if (= 2 (count counts))
+                           (offset-window window (second counts))
+                           window)
+                         (first counts)))]
+    (assoc node
+           ::window window
+           :honey (pagination-honey window db-type))))
 
 
 (defn- join'
@@ -158,8 +218,12 @@
 
 (defn- union'
   [node _opts]
-  (let [[xrel yrel] (:args node)]
-    (assoc node :honey {:union [(:honey xrel) (:honey yrel)]})))
+  (let [operand (fn [rel]
+                  (let [honey (:honey rel)]
+                    (if (or (::window rel) (seq (:order-by honey)))
+                      {:select :* :from (from honey)}
+                      honey)))]
+    (assoc node :honey {:union (mapv operand (:args node))})))
 
 
 (defn- distinct'
@@ -170,17 +234,20 @@
 
 (defn- order-by'
   [node _opts]
-  (let [[rel ordering] (:args node)]
+  (let [[rel ordering] (:args node)
+        honey (if (::window rel)
+                {:select :* :from (from (:honey rel))}
+                (:honey rel))]
     (assoc
       node
       :honey
-      (merge (:honey rel) {:order-by (mapv (fn [attr]
-                                             (if (vector? attr)
-                                               (let [[attr-name order] attr]
-                                                 [(sql-attr-name attr-name) order])
-                                               [(sql-attr-name attr) :asc]))
+      (merge honey {:order-by (mapv (fn [attr]
+                                      (if (vector? attr)
+                                        (let [[attr-name order] attr]
+                                          [(sql-attr-name attr-name) order])
+                                        [(sql-attr-name attr) :asc]))
 
-                                           ordering)}))))
+                                    ordering)}))))
 
 
 (defn- constant-extension
@@ -192,9 +259,14 @@
 (defn- extend'
   [node _opts]
   (let [[rel extensions] (:args node)
-        honey (:honey rel)]
+        honey (if (::window rel)
+                {:select (raw-selection (heading-attr-names rel))
+                 :from (from (:honey rel))}
+                (:honey rel))]
     (assoc node :honey
-           (update honey :select into (mapv constant-extension extensions)))))
+           (update honey :select
+                   #(into (if (= :* %) (raw-selection (heading-attr-names rel)) %)
+                          (mapv constant-extension extensions))))))
 
 
 (def ^:private env
@@ -208,30 +280,68 @@
    'full-join  (partial join' :full-join)
    'left-join  (partial join' :left-join)
    'right-join (partial join' :right-join)
-   'limit limit'
+   'limit pagination'
+   'offset pagination'
    'union union'
    'order-by order-by'
    'extend extend'})
 
 
 (def default-opts
-  {:table-name-fn name
+  {:db-type :postgresql
+   :table-name-fn name
    :column-name-fn (fn [_relvar-name attr-name] (name attr-name))})
 
 
+(defn- validate-sqlserver-ordering!
+  [honey]
+  (letfn [(visit
+            [value nested?]
+            (cond
+              (map? value)
+              (do
+                (when (and nested? (seq (:order-by value))
+                           (not-any? #(contains? value %)
+                                     [:offset :select-top :select-distinct-top]))
+                  (throw (ex-info
+                           "SQL Server subquery order-by must be paired with pagination"
+                           {:db-type :mssql :query value})))
+                (doseq [child (vals value)]
+                  (visit child true)))
+
+              (sequential? value)
+              (doseq [child value]
+                (visit child nested?))))]
+    (visit honey false)))
+
+
 (defn transform
+  "Transforms a compiled RAQL AST into HoneySQL.
+
+  :db-type selects :postgresql (default), :mssql, or :hsqldb.
+  :params supplies named pagination values; pass it to HoneySQL formatting
+  as well for restriction parameters. SQL Server offsets require order-by."
   ([ast]
    (transform ast {}))
   ([ast opts]
    (let [opts (merge default-opts opts)]
-     (:honey
-       (walk/postwalk
-         (apply-if
-           ast/node?
-           (fn [node]
-             (let [operator (:operator node)
-                   f (env operator)]
-               (f node opts))))
-
-         ast)))))
-
+     (when-not (#{:postgresql :mssql :hsqldb} (:db-type opts))
+       (throw (ex-info "Unsupported pagination database type"
+                       {:db-type (:db-type opts)})))
+     (when (and (contains? opts :params) (not (map? (:params opts))))
+       (throw (ex-info "Transform :params must be a map" {:params (:params opts)})))
+     (let [honey
+           (:honey
+             (walk/postwalk
+               (apply-if
+                 ast/node?
+                 (fn [node]
+                   (let [operator (:operator node)
+                         f (env operator)]
+                     (when-not f
+                       (throw (ex-info "Unsupported RAQL operator" {:operator operator})))
+                     (f node opts))))
+               ast))]
+       (when (= :mssql (:db-type opts))
+         (validate-sqlserver-ordering! honey))
+       honey))))
