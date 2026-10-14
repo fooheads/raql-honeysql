@@ -85,17 +85,19 @@ large offsets can be expensive. Keyset pagination is not implemented.
 
 ## Development
 
-The new pagination compiler and translator must be tested together. With
-`raql` checked out beside this repository:
+The pagination compiler and translator must be tested together. The `:test`
+alias uses the sibling `../raql` checkout rather than the published RAQL
+artifact. With `raql` checked out beside this repository:
 
 ```bash
 # RAQL
 cd ../raql
 clojure -X:test
 
-# Adapter: local RAQL override, existing SQLite tests, and embedded HSQLDB 2.7.4
+# Adapter: sibling RAQL sources, existing SQLite tests, and embedded HSQLDB 2.7.4
 cd ../raql-honeysql
-clojure -X:test:test/local
+clojure -M:test
+# Alternatively: clojure -X:test
 ```
 
 External execution tests use isolated, uniquely named tables and remove them
@@ -104,7 +106,7 @@ afterward. Select an engine and provide a JDBC URL using environment variables:
 ```bash
 export RAQL_TEST_DB=postgresql # or mssql
 export RAQL_TEST_JDBC_URL='jdbc:postgresql://localhost/raql_test'
-clojure -X:test:test/local:test/integration
+clojure -X:test:test/integration
 ```
 
 Supply authentication through the JDBC connection settings appropriate to your
@@ -113,6 +115,7 @@ test database; never commit credentials. SQL Server URLs use
 engine or URL is missing instead of skipping execution.
 
 The production RAQL artifact dependency must be updated after a RAQL release
-containing the pagination changes. Until then, use the `:test/local` override
-or an equivalent local dependency override; this repository does not publish
-the sibling library automatically.
+containing the pagination changes. Until then, the `:test` alias supplies the
+local dependency override for tests; other development commands need an
+equivalent local dependency override. This repository does not publish the
+sibling library automatically.
