@@ -64,12 +64,16 @@
 
 (defn- raw-restriction
   [restriction opts]
-  (let [[operator & operands] restriction]
+  (let [[operator & operands] (when (sequential? restriction) restriction)]
     (case operator
+      (and or not)
+      (into [operator] (map #(raw-restriction % opts) operands))
+
       in
       (let [[attr-name vector-or-subquery] operands]
         (cond
-          (map? vector-or-subquery)
+          (and (ast/node? vector-or-subquery)
+               (ast/operator? (:operator vector-or-subquery)))
           ['in (sql-attr-name attr-name) (transform vector-or-subquery opts)]
 
           :else

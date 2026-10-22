@@ -3,6 +3,27 @@
 Translates compiled [RAQL](https://github.com/fooheads/raql) ASTs into HoneySQL
 maps. SQL formatting and execution remain the caller's responsibility.
 
+## Restrictions and subqueries
+
+Relational `in` subqueries can appear directly in a restriction or inside
+nested `and`, `or`, and `not` expressions:
+
+```clojure
+'[restrict [relation :ItemTags]
+  [and [> :ItemTags/item-id ?minimum]
+       [in :ItemTags/item-id
+        [project
+         [restrict [relation :ItemTags] [= :ItemTags/tag ?tag]]
+         [:ItemTags/item-id]]]]]
+```
+
+Projection, division, and paginated subqueries use the same transformation
+options as the enclosing query. Pass restriction parameters to HoneySQL's
+`:params`, and also pass them to `transform` when named pagination is used.
+Literal-list predicates such as `[in :ItemTags/item-id [1 3]]` and collection
+parameters such as `[in :ItemTags/item-id ?ids]` keep their existing behavior;
+they are not converted into relations.
+
 ## Relational division
 
 `divide` implements classical binary division using `SELECT DISTINCT` and
