@@ -3,6 +3,61 @@
 Translates compiled [RAQL](https://github.com/fooheads/raql) ASTs into HoneySQL
 maps. SQL formatting and execution remain the caller's responsibility.
 
+## Relational division
+
+`divide` implements classical binary division using `SELECT DISTINCT` and
+double `NOT EXISTS`, built entirely as HoneySQL structures. Both operands can
+be base or derived relations, including parameterized restrictions and paged
+queries. There is no division-specific database option; use the existing
+`:db-type` and matching HoneySQL dialect described below.
+
+```clojure
+'[divide
+  [relation :ItemTags]
+  [rename [relation :RequiredTags] [[:RequiredTags/tag :ItemTags/tag]]]]
+
+;; Equivalent threaded form:
+'[-> [relation :ItemTags]
+     [divide
+      [rename [relation :RequiredTags] [[:RequiredTags/tag :ItemTags/tag]]]]]
+```
+
+For `ItemTags(item-id, tag)` containing `(1, A), (1, B), (2, A), (3, A),
+(3, B), (3, C)` and `RequiredTags(tag)` containing `(A), (B)`, the result is
+distinct item IDs 1 and 3. Extra values are allowed and duplicates do not
+change the answer. All divisor attributes must exist in the dividend with
+the same RAQL type; match the complete attribute keywords, using `rename`
+where necessary. Multi-column requirements match complete tuples.
+
+**An empty divisor returns only the distinct candidate tuples present in the
+dividend.** An empty dividend always returns nothing, even if both operands
+are empty. Applications wanting empty tag selection to include untagged items
+must handle that case outside binary division.
+
+Matching uses ordinary SQL `=`, consistent with existing join predicates.
+NULL does not match NULL: a requirement containing any NULL is unsatisfiable,
+and a candidate with a NULL key component cannot match a witness when the
+divisor is nonempty. An empty divisor still retains NULL candidate keys.
+`DISTINCT` eliminates duplicate result tuples, including duplicate NULL keys.
+
+SQL has no portable zero-column result shape. For zero-attribute relations,
+including division where both headings are equal and projection onto `[]`,
+the adapter uses a constant column `__raql_unit` with value 1. One row represents
+the empty tuple, and no rows represents the empty relation. This column is not
+part of the RAQL heading; extensions and nonempty projections select the real
+attributes rather than exposing it as an additional attribute.
+
+Pass restriction parameters to HoneySQL's `:params`, and also to `transform`
+if either operand uses named pagination. Values remain bound parameters,
+including when the dividend appears twice in the generated SQL. Alias names
+are allocated per transformation to avoid correlation collisions in nested
+division. As with other relational wrappers, add an outer `order-by` for final
+presentation ordering; existing SQL Server subquery ordering restrictions
+still apply.
+
+Collection-valued `in` parameters are not relations, and no relation-valued
+parameter API is added. Use an existing base or derived relation as the divisor.
+
 ## Limit and offset
 
 Given a RAQL `heading-relmap` describing your relations and attributes:
@@ -85,21 +140,20 @@ large offsets can be expensive. Keyset pagination is not implemented.
 
 ## Development
 
-Normal tests use the published RAQL dependency and do not require a sibling
-checkout:
+The new division compiler support is currently in the sibling RAQL sources,
+not the pinned published RAQL `0.9.10` dependency. Run joint-source tests with
+`raql` checked out beside this repository:
 
 ```bash
 # Existing SQLite tests and embedded HSQLDB 2.7.4
-clojure -M:test
-# Alternatively: clojure -X:test
-```
-
-For joint development with `raql` checked out beside this repository, opt into
-the sibling sources:
-
-```bash
 clojure -M:test:test/local
+# Alternatively: clojure -X:test:test/local
 ```
+
+The embedded suites execute division results, including duplicates, NULLs,
+empty relations, zero-attribute headings, nested division, and pagination.
+SQL generation is covered for PostgreSQL, SQL Server, and HSQLDB; formatting
+coverage is not proof of execution on an external engine.
 
 External execution tests use isolated, uniquely named tables and remove them
 afterward. Select an engine and provide a JDBC URL using environment variables:
@@ -107,7 +161,7 @@ afterward. Select an engine and provide a JDBC URL using environment variables:
 ```bash
 export RAQL_TEST_DB=postgresql # or mssql
 export RAQL_TEST_JDBC_URL='jdbc:postgresql://localhost/raql_test'
-clojure -X:test:test/integration
+clojure -X:test:test/local:test/integration
 ```
 
 Supply authentication through the JDBC connection settings appropriate to your
@@ -115,6 +169,7 @@ test database; never commit credentials. SQL Server URLs use
 `jdbc:sqlserver://...`. The integration alias reports an explicit error if the
 engine or URL is missing instead of skipping execution.
 
-The production dependency is RAQL `0.9.10`. Release validation should use the
-normal test command without `:test/local`, so it exercises the same dependency
-that consumers receive.
+The production dependency and library versions are unchanged. Publishing
+division support will require a separate coordinated release: RAQL first,
+then the adapter with that published dependency. After that update, release
+validation should use the normal tests without `:test/local`.
