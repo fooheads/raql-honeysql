@@ -79,6 +79,72 @@ still apply.
 Collection-valued `in` parameters are not relations, and no relation-valued
 parameter API is added. Use an existing base or derived relation as the divisor.
 
+## Relational aggregation
+
+RAQL's ungrouped `aggregate` runs entirely in the database:
+
+```clojure
+'[-> [relation :person]
+     [restrict [>= :person/age ?minimum]]
+     [aggregate {:summary/count [count]
+                 :summary/total-age [sum :person/age]
+                 :summary/average-age [avg :person/age]}]]
+```
+
+The result contains one tuple with the named attributes. Count and sum return
+zero for empty input; average over empty input is an error. Numeric selectors
+must have RAQL type `:integer` or `:double`; NULL/missing, nonnumeric, and
+nonfinite selected values are not silently skipped. Count counts complete
+tuples, including tuples with NULL fields. See the
+[RAQL language contract](https://github.com/fooheads/raql#relational-aggregation).
+
+The adapter first selects distinct **complete input tuples**, then computes all
+aggregates over that relation. It does not use `AVG(DISTINCT attribute)`:
+people `(1,20), (2,20), (3,50)` have average age 30. To count distinct ages,
+project onto age before aggregating. No client-side fetch-all/reduce fallback,
+SQL strings, or formatting-time SQL rewriting is used.
+
+| Adapter database type | Count | Strict sum / average |
+| --- | --- | --- |
+| `:postgresql` (default) | Supported | SQL generation covered; external execution unverified |
+| `:mssql` | `COUNT_BIG` | SQL generation covered; external execution unverified |
+| `:hsqldb` | Supported | Executed on embedded HSQLDB 2.7.4 |
+| `:sqlite` | Executed on embedded SQLite | Explicit unsupported-capability exception |
+
+**Select the actual database type**, particularly for SQLite. Numeric validation
+uses a correlated scalar subquery which produces a second row for invalid
+input or an empty average, raising a database cardinality violation. SQLite
+instead accepts multirow scalar subqueries, so it cannot enforce this contract
+and is rejected for sum/average. Validation remains in the aggregate query's
+WHERE clause even when a later projection discards a numeric output.
+SQL error messages and SQLStates are database-specific.
+
+The physical schema must match the declared RAQL numeric types. Counts and
+integer sums use signed 64-bit SQL values; overflow raises a database error,
+not a wrapped or floating-point result. SQL Server uses `COUNT_BIG` for both
+tuple counts and validation counts. Integer averages cast their input to a
+floating SQL type **before** AVG to avoid integer truncation. Average and
+double sum are approximate binary floating-point operations; conversion of
+large integers can lose precision, and even a mathematically finite average
+may exceed a backend's intermediate arithmetic limits. Nonfinite numeric
+inputs/results are rejected. Decimal arithmetic is not implemented.
+
+SQL Server's count result is also guarded against NULL, rather than accepting
+a missing result when session settings suppress a native arithmetic error.
+
+Input restrictions, views, projection, nested aggregates, and pagination retain
+their scope and parameter bindings. An ordering directly on the aggregate
+input is discarded unless it selects a page. Other existing SQL Server
+subquery-ordering restrictions still apply. To count matches before pagination,
+construct both count and page expressions from the same distinct, unpaged
+matching-ID relation; do not wrap a paged query or add an external SQL count
+wrapper. Separate executions need transaction/snapshot coordination if a
+consistent count and page are required under concurrent changes.
+
+An empty named-aggregate map still returns one empty tuple, represented by
+the existing `__raql_unit` column. Zero-attribute input cardinality is supported.
+Grouping and user-defined aggregate registration are not implemented.
+
 ## Limit and offset
 
 Given a RAQL `heading-relmap` describing your relations and attributes:
@@ -118,6 +184,7 @@ auto-detection or global dialect change.
 | `:postgresql` (default) | `:ansi` | `LIMIT ? OFFSET ?` |
 | `:mssql` | `:sqlserver` | `TOP(?)` for limit-only; `OFFSET ? ROWS FETCH NEXT ? ROWS ONLY` with offset |
 | `:hsqldb` | `:ansi` | `FETCH FIRST ? ROWS ONLY` for limit-only; `OFFSET ? ROWS FETCH NEXT ? ROWS ONLY` with offset |
+| `:sqlite` | `:ansi` | `LIMIT ? OFFSET ?`, like PostgreSQL |
 
 Offset-only queries omit the limit/fetch clause. PostgreSQL and HSQLDB use
 `OFFSET ?`; SQL Server uses `OFFSET ? ROWS`. HoneySQL can use singular `ROW`
@@ -161,7 +228,7 @@ large offsets can be expensive. Keyset pagination is not implemented.
 
 ## Development
 
-The new division compiler support is currently in the sibling RAQL sources,
+The new division and aggregation compiler support is in the sibling RAQL sources,
 not the pinned published RAQL `0.9.10` dependency. Run joint-source tests with
 `raql` checked out beside this repository:
 
@@ -171,8 +238,11 @@ clojure -M:test:test/local
 # Alternatively: clojure -X:test:test/local
 ```
 
-The embedded suites execute division results, including duplicates, NULLs,
-empty relations, zero-attribute headings, nested division, and pagination.
+The embedded suites execute division and aggregation results, including
+duplicates, NULLs, empty relations, zero-attribute headings, nested operations,
+pagination, fractional averages, and numeric error/overflow cases. Aggregation
+expectations use independent set-and-fold calculations. SQLite executes count;
+HSQLDB executes count, sum, and average, including strict error cases.
 SQL generation is covered for PostgreSQL, SQL Server, and HSQLDB; formatting
 coverage is not proof of execution on an external engine.
 
@@ -191,6 +261,6 @@ test database; never commit credentials. SQL Server URLs use
 engine or URL is missing instead of skipping execution.
 
 The production dependency and library versions are unchanged. Publishing
-division support will require a separate coordinated release: RAQL first,
+division and aggregation support will require a separate coordinated release: RAQL first,
 then the adapter with that published dependency. After that update, release
 validation should use the normal tests without `:test/local`.

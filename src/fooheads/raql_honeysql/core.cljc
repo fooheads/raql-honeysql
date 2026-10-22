@@ -64,7 +64,8 @@
 
 (defn- raw-restriction
   [restriction opts]
-  (let [[operator & operands] (when (sequential? restriction) restriction)]
+  (let [[operator & operands] (when (sequential? restriction) restriction)
+        attribute? #(or (qualified-keyword? %) (contains? (::attributes opts) %))]
     (case operator
       (and or not)
       (into [operator] (map #(raw-restriction % opts) operands))
@@ -77,9 +78,9 @@
           ['in (sql-attr-name attr-name) (transform vector-or-subquery opts)]
 
           :else
-          (walk/postwalk (apply-if qualified-keyword? sql-attr-name) restriction)))
+          (walk/postwalk (apply-if attribute? sql-attr-name) restriction)))
 
-      (walk/postwalk (apply-if qualified-keyword? sql-attr-name) restriction))))
+      (walk/postwalk (apply-if attribute? sql-attr-name) restriction))))
 
 
 (defn- heading-attr-names
@@ -151,7 +152,9 @@
   (let [[xrel restriction] (:args node)]
     (assoc node :honey {:select :*
                         :from (from (:honey xrel))
-                        :where (raw-restriction restriction opts)})))
+                        :where (raw-restriction
+                                 restriction
+                                 (assoc opts ::attributes (set (heading-attr-names xrel))))})))
 
 
 (defn- offset-window
@@ -177,7 +180,7 @@
     (if (= 0 limit)
       (assoc (dissoc honey :order-by) :where [:= [:inline 1] [:inline 0]])
       (case db-type
-        :postgresql
+        (:postgresql :sqlite)
         (cond-> honey
           (some? limit) (assoc :limit limit)
           offset? (assoc :offset offset))
@@ -236,7 +239,11 @@
     (assoc node :honey (assoc selection
                               :from [[(:honey xrel) xalias]]
                               join-op [[(:honey yrel) yalias]
-                                       (raw-restriction restriction opts)]))))
+                                       (raw-restriction
+                                         restriction
+                                         (assoc opts ::attributes
+                                                (set (concat (heading-attr-names xrel)
+                                                             (heading-attr-names yrel)))))]))))
 
 
 (defn- union'
@@ -253,6 +260,99 @@
   [node _opts]
   (let [[xrel] (:args node)]
     (assoc node :honey {:select-distinct :* :from (from (:honey xrel))})))
+
+
+(defn- sql-number-type
+  [type db-type]
+  (case type
+    :integer :bigint
+    :double (case db-type :mssql :float :hsqldb :double :double-precision)))
+
+
+(defn- sql-count
+  [db-type expr]
+  [(if (= :mssql db-type) :count_big :count) expr])
+
+
+(defn- finite-number
+  [expr]
+  [:between expr [:inline -1.7976931348623157E308] [:inline 1.7976931348623157E308]])
+
+
+(defn- aggregate'
+  [node {:keys [db-type] :as opts}]
+  (let [[rel aggregates] (:args node)
+        types (into {} (map (juxt :attr/name :attr/type)) (:heading rel))
+        result-types (into {} (map (juxt :attr/name :attr/type)) (:heading node))
+        specs (mapv (fn [i [output [operator selector]]]
+                      {:output output :operator operator :selector selector
+                       :type (result-types output)
+                       :value (str "raql_aggregate_value_" i)
+                       :valid (str "raql_aggregate_valid_" i)})
+                    (range) aggregates)
+        numeric (filterv #(not= 'count (:operator %)) specs)
+        _ (when (and (= :sqlite db-type) (seq numeric))
+            (throw (ex-info
+                     "SQLite cannot enforce strict numeric aggregate errors with scalar subqueries"
+                     {:db-type db-type :capability :scalar-subquery-cardinality
+                      :aggregates (mapv :operator numeric)})))
+        id (swap! (::alias-counter opts) inc)
+        stats-alias (keyword (str "raql_aggregate_stats_" id))
+        check-alias (keyword (str "raql_aggregate_check_" id))
+        column (fn [name] [:. stats-alias name])
+        count-name "raql_aggregate_count"
+        n (column count-name)
+        source (cond-> (:honey rel)
+                 (not (::window rel)) (dissoc :order-by))
+        input {:select-distinct (raw-selection (heading-attr-names rel))
+               :from (from source)}
+        statistics (mapcat
+                     (fn [{:keys [operator selector type value valid]}]
+                       (let [attr (sql-attr-name selector)
+                             sql-type (sql-number-type type db-type)
+                             expr [(case operator sum :sum avg :avg)
+                                   [:cast attr sql-type]]
+                             result (if (= 'sum operator)
+                                      [:case
+                                       [:= (sql-count db-type :*) [:inline 0]]
+                                       [:cast [:inline 0] sql-type]
+                                       :else [:cast expr sql-type]]
+                                      expr)
+                             present (if (= :double (types selector))
+                                       [:case (finite-number attr) [:inline 1] :else nil]
+                                       attr)]
+                         [[result value] [(sql-count db-type present) valid]]))
+                     numeric)
+        stats {:select (into [[[:cast (sql-count db-type :*) :bigint] count-name]]
+                             statistics)
+               :from (from input)}
+        invalid (cons [:= n nil]
+                      (mapcat
+                        (fn [{:keys [operator type value valid]}]
+                          (cond-> [[:not= (column valid) n]
+                                   [:= (column value) nil]]
+                            (= 'avg operator) (conj [:= n [:inline 0]])
+                            (= :double type)
+                            (conj [:= [:case (finite-number (column value)) [:inline 0]
+                                       :else [:inline 1]]
+                                   [:inline 1]])))
+                        numeric))
+        ;; A scalar subquery must produce at most one row. The second row
+        ;; makes invalid aggregates raise a SQL-standard cardinality violation.
+        check {:select [[[:inline 1]]]
+               :from [[{:values [[[:inline 0]] [[:inline 1]]]}
+                       [check-alias {:columns [:candidate]}]]]
+               :where (into [:or [:= [:. check-alias :candidate] [:inline 0]]] invalid)}
+        selection (if (seq specs)
+                    (mapv (fn [{:keys [output operator value]}]
+                            [[(if (= 'count operator) n (column value))]
+                             [(sql-attr-name output)]])
+                          specs)
+                    unit-selection)]
+    (assoc node :honey
+           (cond-> {:select selection :from (from stats stats-alias)}
+             (or (seq numeric) (= :mssql db-type))
+             (assoc :where [:= check [:inline 1]])))))
 
 
 (defn- divide'
@@ -360,6 +460,7 @@
    'offset pagination'
    'union union'
    'divide divide'
+   'aggregate aggregate'
    'order-by order-by'
    'extend extend'})
 
@@ -395,17 +496,18 @@
 (defn transform
   "Transforms a compiled RAQL AST into HoneySQL.
 
-  :db-type selects :postgresql (default), :mssql, or :hsqldb.
+  :db-type selects :postgresql (default), :mssql, :hsqldb, or :sqlite.
   :params supplies named pagination values; pass it to HoneySQL formatting
   as well for restriction parameters. SQL Server offsets require order-by.
-  Division uses SQL equality; zero-attribute results use __raql_unit."
+  Division uses SQL equality; zero-attribute results use __raql_unit.
+  SQLite supports aggregate count, but not strict sum or avg."
   ([ast]
    (transform ast {}))
   ([ast opts]
    (let [opts (-> (merge default-opts opts)
                   (update ::alias-counter #(or % (atom 0))))]
-     (when-not (#{:postgresql :mssql :hsqldb} (:db-type opts))
-       (throw (ex-info "Unsupported pagination database type"
+     (when-not (#{:postgresql :mssql :hsqldb :sqlite} (:db-type opts))
+       (throw (ex-info "Unsupported database type"
                        {:db-type (:db-type opts)})))
      (when (and (contains? opts :params) (not (map? (:params opts))))
        (throw (ex-info "Transform :params must be a map" {:params (:params opts)})))
