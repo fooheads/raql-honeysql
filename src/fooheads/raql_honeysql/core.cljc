@@ -31,22 +31,28 @@
   (and (vector? x) (= 2 (count x))))
 
 
+(def ^:private unit-selection
+  [[[:inline 1] [(sql-attr-name :__raql_unit)]]])
+
+
 (defn- raw-selection
   "Takes a list of attr-names (namespaced keywords) or pairs of attr-names and
   turns them into 'raw' honey."
   [attr-name-pairs]
-  (mapv
-    (fn [x]
-      (cond
-        (pair? x)
-        [[(sql-attr-name (first x))] [(sql-attr-name (second x))]]
+  (if (seq attr-name-pairs)
+    (mapv
+      (fn [x]
+        (cond
+          (pair? x)
+          [[(sql-attr-name (first x))] [(sql-attr-name (second x))]]
 
-        (keyword? x)
-        [(sql-attr-name x)]
+          (keyword? x)
+          [(sql-attr-name x)]
 
-        :else
-        (throw-ex "Not a valid attr-name or pair: {x}")))
-    attr-name-pairs))
+          :else
+          (throw-ex "Not a valid attr-name or pair: {x}")))
+      attr-name-pairs)
+    unit-selection))
 
 
 (defn- from
@@ -83,7 +89,9 @@
         attr-names (heading-attr-names node)
         sql-names (map (comp vector sql-attr-name) attr-names)
         attr-unqualified-names (map (comp sql-attr-name column-name) (:heading node))
-        selection (mapv vector attr-unqualified-names sql-names)]
+        selection (if (seq attr-names)
+                    (mapv vector attr-unqualified-names sql-names)
+                    unit-selection)]
     selection))
 
 
@@ -92,7 +100,8 @@
    (let [relvar-name (first (:args node))
          table-name (table-name-fn relvar-name)
          namespaced-table-name (sql-relation-name db-schema table-name)]
-     (assoc node :honey {:select (selection node column-name-fn)
+     (assoc node :honey {(if (seq (:heading node)) :select :select-distinct)
+                         (selection node column-name-fn)
                          :from (from namespaced-table-name)})))
 
   ;; Not yet implemented
@@ -117,7 +126,8 @@
 (defn- project'
   [node _opts]
   (let [[xrel projection] (:args node)]
-    (assoc node :honey {:select (raw-selection projection)
+    (assoc node :honey {(if (seq projection) :select :select-distinct)
+                        (raw-selection projection)
                         :from (from (:honey xrel))})))
 
 
@@ -127,7 +137,8 @@
         anti-projection (set anti-projection)
         attr-names (->> xrel :heading (map :attr/name))
         projection (remove anti-projection attr-names)]
-    (assoc node :honey {:select (raw-selection projection)
+    (assoc node :honey {(if (seq projection) :select :select-distinct)
+                        (raw-selection projection)
                         :from (from (:honey xrel))})))
 
 
@@ -209,11 +220,19 @@
 
 (defn- join'
   [join-op node opts]
-  (let [[xrel yrel restriction] (:args node)]
-    (assoc node :honey {:select :*
-                        :from [[(:honey xrel) :__xrel]]
-                        join-op [[(:honey yrel) :__yrel]
-                                 (raw-restriction restriction opts)]})))
+  (let [[xrel yrel restriction] (:args node)
+        unit? (or (empty? (:heading xrel)) (empty? (:heading yrel)))
+        xalias (if unit? :raql_xrel :__xrel)
+        yalias (if unit? :raql_yrel :__yrel)
+        selection (cond
+                    (empty? (:heading node)) {:select-distinct unit-selection}
+                    (empty? (:heading xrel)) {:select [:raql_yrel.*]}
+                    (empty? (:heading yrel)) {:select [:raql_xrel.*]}
+                    :else {:select :*})]
+    (assoc node :honey (assoc selection
+                              :from [[(:honey xrel) xalias]]
+                              join-op [[(:honey yrel) yalias]
+                                       (raw-restriction restriction opts)]))))
 
 
 (defn- union'
@@ -230,6 +249,55 @@
   [node _opts]
   (let [[xrel] (:args node)]
     (assoc node :honey {:select-distinct :* :from (from (:honey xrel))})))
+
+
+(defn- divide'
+  [node opts]
+  (let [[dividend divisor] (:args node)
+        id (swap! (::alias-counter opts) inc)
+        ;; HSQLDB rejects underscore-prefixed qualifiers when quoting is off.
+        candidate (keyword (str "raql_divide_candidate_" id))
+        required (keyword (str "raql_divide_required_" id))
+        witness (keyword (str "raql_divide_witness_" id))
+        columns (into {}
+                      (map-indexed
+                        (fn [i attr]
+                          [(:attr/name attr) (keyword (str "__divide_attr_" i))])
+                        (:heading dividend)))
+        column (fn [alias attr] [:. alias (name (columns attr))])
+        ;; Internal column names keep literal RAQL names (including / and .)
+        ;; out of HoneySQL's qualified-identifier splitting.
+        operand (fn [rel]
+                  {:select (raw-selection
+                             (mapv (fn [attr] [attr (columns attr)])
+                                   (heading-attr-names rel)))
+                   :from (from (:honey rel))})
+        dividend-honey (operand dividend)
+        result-attrs (heading-attr-names node)
+        matches (concat
+                  (map (fn [attr]
+                         [:= (column witness attr) (column candidate attr)])
+                       result-attrs)
+                  (map (fn [attr]
+                         [:= (column witness attr) (column required attr)])
+                       (heading-attr-names divisor)))
+        match-query {:select [[[:inline 1]]]
+                     :from (from dividend-honey witness)
+                     :where (if (seq matches)
+                              (into [:and] matches)
+                              [:= [:inline 1] [:inline 1]])}
+        missing-query {:select [[[:inline 1]]]
+                       :from (from (operand divisor) required)
+                       :where [:not [:exists match-query]]}]
+    (assoc node :honey
+           {:select-distinct
+            (if (seq result-attrs)
+              (mapv (fn [attr]
+                      [[(column candidate attr)] [(sql-attr-name attr)]])
+                    result-attrs)
+              unit-selection)
+            :from (from dividend-honey candidate)
+            :where [:not [:exists missing-query]]})))
 
 
 (defn- order-by'
@@ -259,8 +327,12 @@
 (defn- extend'
   [node _opts]
   (let [[rel extensions] (:args node)
-        honey (if (::window rel)
-                {:select (raw-selection (heading-attr-names rel))
+        honey (if (or (::window rel)
+                      (:select-distinct (:honey rel))
+                      (empty? (:heading rel)))
+                {:select (if (seq (:heading rel))
+                           (raw-selection (heading-attr-names rel))
+                           (if (seq extensions) [] unit-selection))
                  :from (from (:honey rel))}
                 (:honey rel))]
     (assoc node :honey
@@ -283,6 +355,7 @@
    'limit pagination'
    'offset pagination'
    'union union'
+   'divide divide'
    'order-by order-by'
    'extend extend'})
 
@@ -320,11 +393,13 @@
 
   :db-type selects :postgresql (default), :mssql, or :hsqldb.
   :params supplies named pagination values; pass it to HoneySQL formatting
-  as well for restriction parameters. SQL Server offsets require order-by."
+  as well for restriction parameters. SQL Server offsets require order-by.
+  Division uses SQL equality; zero-attribute results use __raql_unit."
   ([ast]
    (transform ast {}))
   ([ast opts]
-   (let [opts (merge default-opts opts)]
+   (let [opts (-> (merge default-opts opts)
+                  (update ::alias-counter #(or % (atom 0))))]
      (when-not (#{:postgresql :mssql :hsqldb} (:db-type opts))
        (throw (ex-info "Unsupported pagination database type"
                        {:db-type (:db-type opts)})))
