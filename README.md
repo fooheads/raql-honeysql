@@ -228,12 +228,19 @@ large offsets can be expensive. Keyset pagination is not implemented.
 
 ## Development
 
-The new division and aggregation compiler support is in the sibling RAQL sources,
-not the pinned published RAQL `0.9.10` dependency. Run joint-source tests with
-`raql` checked out beside this repository:
+The pinned published RAQL `0.9.11` dependency includes division and aggregation
+compiler support. Run tests against that dependency with:
 
 ```bash
 # Existing SQLite tests and embedded HSQLDB 2.7.4
+clojure -M:test
+# Alternatively: clojure -X:test
+```
+
+For joint development with `raql` checked out beside this repository, override
+the published dependency with the sibling sources:
+
+```bash
 clojure -M:test:test/local
 # Alternatively: clojure -X:test:test/local
 ```
@@ -252,7 +259,7 @@ afterward. Select an engine and provide a JDBC URL using environment variables:
 ```bash
 export RAQL_TEST_DB=postgresql # or mssql
 export RAQL_TEST_JDBC_URL='jdbc:postgresql://localhost/raql_test'
-clojure -X:test:test/local:test/integration
+clojure -X:test:test/integration
 ```
 
 Supply authentication through the JDBC connection settings appropriate to your
@@ -260,7 +267,5 @@ test database; never commit credentials. SQL Server URLs use
 `jdbc:sqlserver://...`. The integration alias reports an explicit error if the
 engine or URL is missing instead of skipping execution.
 
-The production dependency and library versions are unchanged. Publishing
-division and aggregation support will require a separate coordinated release: RAQL first,
-then the adapter with that published dependency. After that update, release
-validation should use the normal tests without `:test/local`.
+Release validation should use the normal tests without `:test/local` to verify
+the published RAQL dependency rather than sibling sources.
